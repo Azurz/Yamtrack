@@ -317,28 +317,6 @@ def import_yamtrack(request):
 
 
 @require_POST
-def import_netflix(request):
-    """View for importing data from Netflix viewing history CSV."""
-    file = request.FILES.get("netflix_csv")
-
-    if not file:
-        messages.error(request, "Netflix CSV file is required.")
-        return redirect("import_data")
-
-    mode = request.POST["mode"]
-    tasks.import_netflix.delay(
-        file=request.FILES["netflix_csv"],
-        user_id=request.user.id,
-        mode=mode,
-    )
-    messages.info(
-        request,
-        "The task to import media from Netflix CSV file has been queued.",
-    )
-    return redirect("import_data")
-
-
-@require_POST
 def import_hltb(request):
     """View for importing game date from HowLongToBeat."""
     file = request.FILES.get("hltb_csv")
