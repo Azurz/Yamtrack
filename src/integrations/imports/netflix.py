@@ -144,9 +144,14 @@ class NetflixImporter:
         logger.warning("Could not parse Netflix date: %s", date_str)
         return None
 
-    def _lookup_media(self, title):
-        """Look up title in TMDB with a TV-first strategy and movie fallback."""
-        search_order = (MediaTypes.TV.value, MediaTypes.MOVIE.value)
+    def _lookup_media(self, title, raw_title):
+        """Look up title in TMDB with strategy based on Netflix row shape."""
+        # Rows with ":" usually represent episodic entries.
+        if ":" in raw_title:
+            search_order = (MediaTypes.TV.value, MediaTypes.MOVIE.value)
+        else:
+            search_order = (MediaTypes.MOVIE.value, MediaTypes.TV.value)
+
         for media_type in search_order:
             results = services.search(
                 media_type,
@@ -167,7 +172,7 @@ class NetflixImporter:
     def _import_grouped_row(self, grouped):
         title = grouped["title"]
         watch_date = grouped["watch_date"]
-        match = self._lookup_media(title)
+        match = self._lookup_media(title, grouped["raw_title"])
 
         if not match:
             self.warnings.append(
@@ -211,7 +216,6 @@ class NetflixImporter:
                 item=item,
                 user=self.user,
                 status=Status.IN_PROGRESS.value,
-                start_date=watch_date,
             )
 
         instance._history_date = watch_date or timezone.now()

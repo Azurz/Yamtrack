@@ -1,4 +1,3 @@
-from datetime import date
 from io import BytesIO
 from unittest.mock import patch
 
@@ -66,10 +65,6 @@ class ImportNetflix(TestCase):
 
         tv = TV.objects.get(item__title="Breaking Bad")
         self.assertEqual(tv.status, Status.IN_PROGRESS.value)
-        self.assertEqual(
-            tv.start_date.date(),
-            date(2026, 2, 26),
-        )
 
         movie = Movie.objects.get(item__title="Submersion")
         self.assertEqual(movie.status, Status.COMPLETED.value)
