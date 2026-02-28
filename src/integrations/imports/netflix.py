@@ -342,10 +342,21 @@ class NetflixApiImporter(NetflixImporter):
             self.credentials["secure_netflix_id"],
             domain=".netflix.com",
         )
-        session.headers["User-Agent"] = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
+        session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "X-Requested-With": "XMLHttpRequest",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+            }
         )
         return session
 
@@ -380,8 +391,17 @@ class NetflixApiImporter(NetflixImporter):
                     "pgSize": self._PAGE_SIZE,
                     "from": page * self._PAGE_SIZE,
                 },
+                headers={"Referer": "https://www.netflix.com/viewingactivity"},
                 timeout=15,
             )
+            if resp.status_code == 421:
+                msg = (
+                    "Netflix rejected the request (HTTP 421). "
+                    "This usually means Netflix blocked the server IP. "
+                    "Try using the CSV import instead: go to netflix.com/viewingactivity "
+                    "and click 'Download all'."
+                )
+                raise MediaImportError(msg)
             if resp.status_code != 200:
                 msg = f"Netflix activity API returned HTTP {resp.status_code}."
                 raise MediaImportError(msg)
