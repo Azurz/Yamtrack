@@ -16,16 +16,21 @@ from integrations.imports.helpers import MediaImportError, MediaImportUnexpected
 
 logger = logging.getLogger(__name__)
 
-# Matches patterns like ": Season 1", ": Saison 2", ": Episode 3", ": S01E01", etc.
-# Used to distinguish episodic TV entries from movie titles that happen to contain ":".
-# Note: \b is intentionally omitted so that mojibake artefacts such as "SaisonÂ"
-# (where the accented letter is a \w character) are still matched correctly.
+# Matches episodic markers found after ":" in Netflix titles such as:
+#   "Show: Season 2: ...", "Show: Saison 1: ...", "Show: Volume 3: ...",
+#   "Show: Mini-série: ...", "Show: S01E02", etc.
+# Used to distinguish clearly episodic TV entries from titles that merely
+# contain a colon (e.g. "Mission: Impossible", "Fast & Furious: Hobbs & Shaw").
+# Note: \b is omitted so that mojibake artefacts like "SaisonÂ" still match.
 _EPISODIC_PATTERN = re.compile(
     r":\s*("
     r"Season|Saison|Temporada|Staffel|Stagione"
     r"|Episode|Épisode|Episodio"
     r"|Chapter|Chapitre|Cap[íi]tulo"
     r"|Partie\s+\d|Parte\s+\d|Part\s+\d"
+    r"|Volume\s+\d"
+    r"|Mini[- ]?s[eé]rie|Miniserie"
+    r"|Pilote|Pilot"
     r"|S\d{1,2}(?:E\d{1,2})?"
     r")",
     re.IGNORECASE,
@@ -132,14 +137,16 @@ class NetflixImporter:
             return text
 
     def _normalize_title(self, raw_title):
-        """Normalize Netflix title rows to a searchable top-level title."""
+        """Normalize a Netflix title to a searchable base title.
+
+        Netflix watch history appends episode/season details after ":".
+        Always stripping at the first ":" ensures that multiple rows for the
+        same show (e.g. "Breaking Bad: Saison 5: Episode 1" and
+        "Breaking Bad: Saison 5: Episode 2") are grouped under one entry.
+        """
         title = self._fix_mojibake(raw_title.strip())
 
-        # Only truncate on ":" when genuine episodic markers are present
-        # (e.g. "Season 2", "Saison 1", "Episode 3").  This preserves movie
-        # titles that legitimately contain a colon such as
-        # "Fast & Furious Presents: Hobbs & Shaw".
-        if _EPISODIC_PATTERN.search(title):
+        if ":" in title:
             title = title.split(":", 1)[0].strip()
 
         return title
@@ -191,21 +198,38 @@ class NetflixImporter:
         result = title
         for char, replacement in replacements.items():
             result = result.replace(char, replacement)
-        # Also apply NFKC normalization to resolve other compatibility chars
         return unicodedata.normalize("NFKC", result)
 
     def _lookup_media(self, title, raw_title):
-        """Look up title in TMDB with strategy based on Netflix row shape."""
-        # Only treat an entry as episodic when actual season/episode markers
-        # are present.  A bare ":" (e.g. "Hobbs & Shaw") is not enough.
-        if _EPISODIC_PATTERN.search(raw_title):
-            search_order = (MediaTypes.TV.value, MediaTypes.MOVIE.value)
-        else:
-            search_order = (MediaTypes.MOVIE.value, MediaTypes.TV.value)
+        """Look up title in TMDB with a multi-pass strategy.
 
-        # Try the normalized title first; fall back to a sanitized version if needed.
-        sanitized = self._sanitize_title_for_search(title)
-        titles_to_try = [title] if sanitized == title else [title, sanitized]
+        Search order (TV-first vs Movie-first) is determined by whether the
+        raw Netflix title contains explicit episodic markers (Season, Saison,
+        Volume, Mini-série, S01E02, etc.).
+
+        For non-episodic entries that were stripped at ":" (e.g. "Nightflyers:
+        Greywing" → title="Nightflyers"), the full raw_title is also tried so
+        that movies with subtitles ("X-Men : Le Commencement") are found under
+        their complete French title before falling back to the stripped form.
+        """
+        is_episodic = bool(_EPISODIC_PATTERN.search(raw_title))
+
+        if is_episodic:
+            # Clearly a TV episode: search TV first, only need the show name.
+            search_order = (MediaTypes.TV.value, MediaTypes.MOVIE.value)
+            titles_to_try = [title]
+        else:
+            # Could be a movie or a TV show without explicit season markers.
+            # Try the full raw_title first (handles "Movie: Subtitle"),
+            # then the stripped title (handles "Show: Episode Title").
+            search_order = (MediaTypes.MOVIE.value, MediaTypes.TV.value)
+            titles_to_try = [title] if raw_title == title else [raw_title, title]
+
+        # Add sanitized variants as final fallbacks for special characters.
+        for base in list(titles_to_try):
+            sanitized = self._sanitize_title_for_search(base)
+            if sanitized != base and sanitized not in titles_to_try:
+                titles_to_try.append(sanitized)
 
         for search_title in titles_to_try:
             for media_type in search_order:
