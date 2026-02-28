@@ -1,4 +1,6 @@
 import logging
+import re
+import unicodedata
 from collections import defaultdict
 from csv import DictReader
 from datetime import datetime
@@ -13,6 +15,21 @@ from integrations.imports import helpers
 from integrations.imports.helpers import MediaImportError, MediaImportUnexpectedError
 
 logger = logging.getLogger(__name__)
+
+# Matches patterns like ": Season 1", ": Saison 2", ": Episode 3", ": S01E01", etc.
+# Used to distinguish episodic TV entries from movie titles that happen to contain ":".
+# Note: \b is intentionally omitted so that mojibake artefacts such as "SaisonÂ"
+# (where the accented letter is a \w character) are still matched correctly.
+_EPISODIC_PATTERN = re.compile(
+    r":\s*("
+    r"Season|Saison|Temporada|Staffel|Stagione"
+    r"|Episode|Épisode|Episodio"
+    r"|Chapter|Chapitre|Cap[íi]tulo"
+    r"|Partie\s+\d|Parte\s+\d|Part\s+\d"
+    r"|S\d{1,2}(?:E\d{1,2})?"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def importer(file, user, mode):
@@ -50,7 +67,9 @@ class NetflixImporter:
         for row in reader:
             try:
                 raw_title = (row.get("Title") or "").strip()
-                watch_date = self._parse_netflix_date(row.get("Date", ""))
+                # Support both old ("Date") and new ("Start Time") Netflix CSV formats.
+                raw_date = row.get("Date") or row.get("Start Time", "")
+                watch_date = self._parse_netflix_date(raw_date)
                 base_title = self._normalize_title(raw_title)
 
                 if not base_title:
@@ -116,19 +135,32 @@ class NetflixImporter:
         """Normalize Netflix title rows to a searchable top-level title."""
         title = self._fix_mojibake(raw_title.strip())
 
-        # Netflix watch history often appends episode/season details separated by ":".
-        if ":" in title:
+        # Only truncate on ":" when genuine episodic markers are present
+        # (e.g. "Season 2", "Saison 1", "Episode 3").  This preserves movie
+        # titles that legitimately contain a colon such as
+        # "Fast & Furious Presents: Hobbs & Shaw".
+        if _EPISODIC_PATTERN.search(title):
             title = title.split(":", 1)[0].strip()
 
         return title
 
     def _parse_netflix_date(self, value):
-        """Parse Netflix date formats such as M/D/YY and M/D/YYYY."""
+        """Parse Netflix date formats.
+
+        Handles the old format ("Date" column: M/D/YY or YYYY-MM-DD) and the
+        newer export format ("Start Time" column: YYYY/MM/DD HH:MM:SS).
+        """
         date_str = (value or "").strip()
         if not date_str:
             return None
 
-        for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d"):
+        for fmt in (
+            "%m/%d/%y",
+            "%m/%d/%Y",
+            "%Y-%m-%d",
+            "%Y/%m/%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+        ):
             try:
                 parsed = datetime.strptime(date_str, fmt)
                 return parsed.replace(
@@ -144,29 +176,53 @@ class NetflixImporter:
         logger.warning("Could not parse Netflix date: %s", date_str)
         return None
 
+    def _sanitize_title_for_search(self, title):
+        """Return a fallback title with special characters simplified.
+
+        Replaces characters like the masculine ordinal indicator (º → o) that
+        TMDB may not index, so a secondary search attempt can succeed.
+        """
+        replacements = {
+            "\u00ba": "o",  # º masculine ordinal indicator
+            "\u00aa": "a",  # ª feminine ordinal indicator
+            "\u2116": "No",  # № numero sign
+            "\u00b0": "",  # ° degree sign
+        }
+        result = title
+        for char, replacement in replacements.items():
+            result = result.replace(char, replacement)
+        # Also apply NFKC normalization to resolve other compatibility chars
+        return unicodedata.normalize("NFKC", result)
+
     def _lookup_media(self, title, raw_title):
         """Look up title in TMDB with strategy based on Netflix row shape."""
-        # Rows with ":" usually represent episodic entries.
-        if ":" in raw_title:
+        # Only treat an entry as episodic when actual season/episode markers
+        # are present.  A bare ":" (e.g. "Hobbs & Shaw") is not enough.
+        if _EPISODIC_PATTERN.search(raw_title):
             search_order = (MediaTypes.TV.value, MediaTypes.MOVIE.value)
         else:
             search_order = (MediaTypes.MOVIE.value, MediaTypes.TV.value)
 
-        for media_type in search_order:
-            results = services.search(
-                media_type,
-                title,
-                1,
-                Sources.TMDB.value,
-            ).get("results", [])
-            if results:
-                first = results[0]
-                return {
-                    "title": first["title"],
-                    "image": first["image"],
-                    "media_id": str(first["media_id"]),
-                    "media_type": media_type,
-                }
+        # Try the normalized title first; fall back to a sanitized version if needed.
+        sanitized = self._sanitize_title_for_search(title)
+        titles_to_try = [title] if sanitized == title else [title, sanitized]
+
+        for search_title in titles_to_try:
+            for media_type in search_order:
+                results = services.search(
+                    media_type,
+                    search_title,
+                    1,
+                    Sources.TMDB.value,
+                ).get("results", [])
+                if results:
+                    first = results[0]
+                    return {
+                        "title": first["title"],
+                        "image": first["image"],
+                        "media_id": str(first["media_id"]),
+                        "media_type": media_type,
+                    }
         return None
 
     def _import_grouped_row(self, grouped):
