@@ -409,6 +409,48 @@ def import_goodreads(request):
 
 
 @require_POST
+def import_netflix_api(request):
+    """View for importing Netflix watch history via session cookies."""
+    netflix_id = request.POST.get("netflix_id", "").strip()
+    secure_netflix_id = request.POST.get("secure_netflix_id", "").strip()
+
+    if not netflix_id or not secure_netflix_id:
+        messages.error(request, "Both Netflix session cookies are required.")
+        return redirect("import_data")
+
+    credentials = json.dumps(
+        {"netflix_id": netflix_id, "secure_netflix_id": secure_netflix_id}
+    )
+    enc_credentials = helpers.encrypt(credentials)
+
+    mode = request.POST["mode"]
+    frequency = request.POST["frequency"]
+    import_time = request.POST["time"]
+
+    if frequency == "once":
+        tasks.import_netflix_api.delay(
+            token=enc_credentials,
+            user_id=request.user.id,
+            mode=mode,
+        )
+        messages.info(
+            request,
+            "The task to import media from Netflix has been queued.",
+        )
+    else:
+        helpers.create_import_schedule(
+            username="Netflix",
+            request=request,
+            mode=mode,
+            frequency=frequency,
+            import_time=import_time,
+            source="Netflix API",
+            token=enc_credentials,
+        )
+    return redirect("import_data")
+
+
+@require_POST
 def import_netflix(request):
     """View for importing watch history from Netflix CSV."""
     file = request.FILES.get("netflix_csv")

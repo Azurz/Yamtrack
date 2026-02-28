@@ -612,6 +612,7 @@ class User(AbstractUser):
             "imdb": "Import from IMDB",
             "goodreads": "Import from GoodReads",
             "netflix": "Import from Netflix",
+            "netflix_api": "Import from Netflix API",
         }
 
         # Reverse mapping to get source from task name

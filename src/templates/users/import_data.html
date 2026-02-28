@@ -394,30 +394,78 @@
         </div>
 
         {# Netflix #}
-        <div class="bg-[#39404b] p-4 rounded-lg">
+        <div class="bg-[#39404b] p-4 rounded-lg"
+             x-data="{ useApiImport: false }">
           <div class="flex items-center mb-3">{% source_display "netflix" %}</div>
-          <p class="text-sm text-gray-400 mb-3"
-             x-text="importFrequency === 'once' ? 'Import TV shows and movies from watch history' : 'File uploads are not available for periodic imports'">
-          </p>
-          <form method="post"
-                action="{% url 'import_netflix' %}"
-                enctype="multipart/form-data">
-            {% csrf_token %}
-            <input type="hidden" name="frequency" x-model="importFrequency">
-            <input type="hidden" name="time" x-model="importTime">
-            <input type="hidden" name="mode" x-model="importMode">
-            <label class="flex items-center justify-center w-full px-4 py-2 text-sm rounded-md transition-colors"
-                   :class="importFrequency === 'once' ? 'bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer' : 'bg-gray-600 text-gray-400 cursor-not-allowed'"
-                   :disabled="importFrequency !== 'once'">
-              <input name="netflix_csv"
-                     accept=".csv"
-                     class="hidden"
-                     type="file"
-                     :disabled="importFrequency !== 'once'"
-                     @change="importFrequency === 'once' && $el.form.submit()">
-              Select CSV File
+
+          <div class="mb-3">
+            <label class="flex items-center text-sm text-gray-300">
+              <input type="checkbox"
+                     x-model="useApiImport"
+                     class="mr-2 rounded bg-[#2a2f35] border-gray-600 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0">
+              Import via session cookies (supports periodic sync)
             </label>
-          </form>
+          </div>
+
+          {# CSV upload (once only) #}
+          <div x-show="!useApiImport">
+            <p class="text-sm text-gray-400 mb-3"
+               x-text="importFrequency === 'once' ? 'Import TV shows and movies from watch history CSV' : 'File uploads are not available for periodic imports'">
+            </p>
+            <form method="post"
+                  action="{% url 'import_netflix' %}"
+                  enctype="multipart/form-data">
+              {% csrf_token %}
+              <input type="hidden" name="frequency" x-model="importFrequency">
+              <input type="hidden" name="time" x-model="importTime">
+              <input type="hidden" name="mode" x-model="importMode">
+              <label class="flex items-center justify-center w-full px-4 py-2 text-sm rounded-md transition-colors"
+                     :class="importFrequency === 'once' ? 'bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer' : 'bg-gray-600 text-gray-400 cursor-not-allowed'">
+                <input name="netflix_csv"
+                       accept=".csv"
+                       class="hidden"
+                       type="file"
+                       :disabled="importFrequency !== 'once'"
+                       @change="importFrequency === 'once' && $el.form.submit()">
+                Select CSV File
+              </label>
+            </form>
+          </div>
+
+          {# Cookie-based import (supports periodic) #}
+          <div x-show="useApiImport" x-cloak>
+            <p class="text-sm text-gray-400 mb-3">
+              Enter your Netflix session cookies to sync automatically.
+              <span class="block mt-1 text-xs text-gray-500">
+                Open Netflix in your browser → DevTools → Application → Cookies → copy
+                <span class="text-indigo-400">NetflixId</span> and
+                <span class="text-indigo-400">SecureNetflixId</span>.
+              </span>
+            </p>
+            <form method="post"
+                  action="{% url 'import_netflix_api' %}">
+              {% csrf_token %}
+              <input type="hidden" name="frequency" x-model="importFrequency">
+              <input type="hidden" name="time" x-model="importTime">
+              <input type="hidden" name="mode" x-model="importMode">
+              <div class="space-y-2 mb-3">
+                <input name="netflix_id"
+                       type="text"
+                       placeholder="NetflixId cookie value"
+                       required
+                       class="w-full py-2 px-3 bg-[#2a2f35] rounded-md text-white text-sm border border-gray-600 focus:border-indigo-500 focus:ring focus:ring-indigo-200 focus:ring-opacity-50">
+                <input name="secure_netflix_id"
+                       type="text"
+                       placeholder="SecureNetflixId cookie value"
+                       required
+                       class="w-full py-2 px-3 bg-[#2a2f35] rounded-md text-white text-sm border border-gray-600 focus:border-indigo-500 focus:ring focus:ring-indigo-200 focus:ring-opacity-50">
+              </div>
+              <button type="submit"
+                      class="w-full px-4 py-2 text-sm rounded-md transition-colors cursor-pointer bg-indigo-600 text-white hover:bg-indigo-700">
+                Import from Netflix
+              </button>
+            </form>
+          </div>
         </div>
 
       </div>

@@ -56,6 +56,10 @@ SOURCES_CONFIG = {
         "name": "Netflix",
         "logo": static("favicon/apple-touch-icon.png"),
     },
+    "netflix_api": {
+        "name": "Netflix",
+        "logo": static("favicon/apple-touch-icon.png"),
+    },
 }
 
 

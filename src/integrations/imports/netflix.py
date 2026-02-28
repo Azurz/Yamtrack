@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import unicodedata
@@ -5,6 +6,7 @@ from collections import defaultdict
 from csv import DictReader
 from datetime import datetime
 
+import requests
 from django.apps import apps
 from django.utils import timezone
 
@@ -300,3 +302,149 @@ class NetflixImporter:
 
         instance._history_date = watch_date or timezone.now()
         self.bulk_media[media_type].append(instance)
+
+
+def api_importer(credentials, user, mode):
+    """Import watch history from Netflix API using session cookies."""
+    importer = NetflixApiImporter(credentials, user, mode)
+    return importer.import_data()
+
+
+class NetflixApiImporter(NetflixImporter):
+    """Import Netflix watch history via the unofficial internal API.
+
+    Requires two session cookies from an active Netflix browser session:
+      - NetflixId
+      - SecureNetflixId
+
+    Netflix does not expose a public API; this uses the same internal
+    endpoint that powers the "Viewing Activity" page.
+    """
+
+    _BROWSE_URL = "https://www.netflix.com/browse"
+    _ACTIVITY_URL = "https://www.netflix.com/api/shakti/{build_id}/viewingactivity"
+    _PAGE_SIZE = 100
+
+    def __init__(self, credentials, user, mode):
+        # credentials is a dict: {"netflix_id": "...", "secure_netflix_id": "..."}
+        super().__init__(None, user, mode)  # file=None, not used by API path
+        self.credentials = credentials
+
+    def _build_session(self):
+        session = requests.Session()
+        session.cookies.set(
+            "NetflixId",
+            self.credentials["netflix_id"],
+            domain=".netflix.com",
+        )
+        session.cookies.set(
+            "SecureNetflixId",
+            self.credentials["secure_netflix_id"],
+            domain=".netflix.com",
+        )
+        session.headers["User-Agent"] = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+        return session
+
+    def _get_build_id(self, session):
+        """Extract Netflix build identifier from the browse page."""
+        resp = session.get(self._BROWSE_URL, timeout=15)
+        if resp.status_code != 200:
+            msg = (
+                f"Netflix returned HTTP {resp.status_code}. "
+                "Your session cookies may be invalid or expired."
+            )
+            raise MediaImportError(msg)
+        match = re.search(r'"BUILD_IDENTIFIER":"([a-z0-9]+)"', resp.text)
+        if not match:
+            msg = (
+                "Could not extract Netflix build ID from the browse page. "
+                "Try refreshing your session cookies."
+            )
+            raise MediaImportError(msg)
+        return match.group(1)
+
+    def _fetch_all_activity(self, session, build_id):
+        """Paginate through Netflix viewing activity and return all items."""
+        url = self._ACTIVITY_URL.format(build_id=build_id)
+        items = []
+        page = 0
+        while True:
+            resp = session.get(
+                url,
+                params={
+                    "pg": page,
+                    "pgSize": self._PAGE_SIZE,
+                    "from": page * self._PAGE_SIZE,
+                },
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                msg = f"Netflix activity API returned HTTP {resp.status_code}."
+                raise MediaImportError(msg)
+            batch = resp.json().get("viewedItems", [])
+            items.extend(batch)
+            if len(batch) < self._PAGE_SIZE:
+                break
+            page += 1
+        return items
+
+    def import_data(self):
+        """Fetch viewing history from Netflix API and import into Yamtrack."""
+        session = self._build_session()
+        build_id = self._get_build_id(session)
+        all_items = self._fetch_all_activity(session, build_id)
+
+        grouped_rows = {}
+        for item in all_items:
+            try:
+                raw_title = (item.get("title") or "").strip()
+                date_ms = item.get("date")
+                watch_date = None
+                if date_ms:
+                    watch_date = datetime.fromtimestamp(
+                        date_ms / 1000,
+                        tz=timezone.get_current_timezone(),
+                    ).replace(hour=0, minute=0, second=0, microsecond=0)
+
+                base_title = self._normalize_title(raw_title)
+                if not base_title:
+                    continue
+
+                key = base_title.casefold()
+                existing = grouped_rows.get(key)
+                if not existing or (
+                    watch_date is not None
+                    and (
+                        existing["watch_date"] is None
+                        or watch_date > existing["watch_date"]
+                    )
+                ):
+                    grouped_rows[key] = {
+                        "title": base_title,
+                        "watch_date": watch_date,
+                        "raw_title": raw_title,
+                    }
+            except Exception as error:
+                error_msg = f"Error processing Netflix API entry: {item}"
+                raise MediaImportUnexpectedError(error_msg) from error
+
+        for grouped in grouped_rows.values():
+            try:
+                self._import_grouped_row(grouped)
+            except Exception as error:
+                error_msg = f"Error importing grouped entry: {grouped}"
+                raise MediaImportUnexpectedError(error_msg) from error
+
+        helpers.cleanup_existing_media(self.to_delete, self.user)
+        helpers.bulk_create_media(self.bulk_media, self.user)
+
+        imported_counts = {
+            media_type: len(media_list)
+            for media_type, media_list in self.bulk_media.items()
+        }
+        deduplicated_messages = "\n".join(dict.fromkeys(self.warnings))
+        return imported_counts, deduplicated_messages if self.warnings else None

@@ -1,3 +1,4 @@
+import json
 import logging
 
 from celery import shared_task
@@ -143,3 +144,10 @@ def import_goodreads(file, user_id, mode):
 def import_netflix(file, user_id, mode):
     """Celery task for importing media data from Netflix CSV."""
     return import_media(netflix.importer, file, user_id, mode)
+
+
+@shared_task(name="Import from Netflix API")
+def import_netflix_api(user_id, mode, token=None, username=None):  # noqa: ARG001
+    """Celery task for importing Netflix watch history via session cookies."""
+    credentials = json.loads(helpers.decrypt(token))
+    return import_media(netflix.api_importer, credentials, user_id, mode)
